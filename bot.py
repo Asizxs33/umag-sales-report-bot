@@ -5,6 +5,7 @@ import tempfile
 from datetime import datetime, timedelta
 
 from aiohttp import web
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.filters import CommandStart
@@ -21,7 +22,17 @@ from aiogram.types import (
     TelegramObject,
 )
 
-from config import ALLOWED_TELEGRAM_USER_IDS, TELEGRAM_BOT_TOKEN, UMAG_PASSWORD, UMAG_PHONE
+from config import (
+    ALLOWED_TELEGRAM_USER_IDS,
+    DASHBOARD_DATABASE_URL,
+    SYNC_HOUR,
+    SYNC_MINUTE,
+    SYNC_NOTIFY_USER_IDS,
+    TELEGRAM_BOT_TOKEN,
+    UMAG_PASSWORD,
+    UMAG_PHONE,
+)
+from daily_sync import sync_day
 from employees import EMPLOYEES
 from report import build_report
 from umag_client import UmagClient, UmagError
@@ -165,6 +176,52 @@ async def _send_report(message: Message, report_date):
         await message.answer_document(FSInputFile(out_path), caption=caption)
 
 
+def _format_sync_summary(summary: dict) -> str:
+    lines = [f"✅ Синхронизация продаж за {summary['date']}: {len(summary['synced'])} сотрудников"]
+    if summary["not_in_umag"]:
+        lines.append(f"⚠️ Не нашёл в UMAG: {', '.join(summary['not_in_umag'])}")
+    if summary["not_in_dashboard"]:
+        lines.append(f"⚠️ Нет в KPI-дашборде: {', '.join(summary['not_in_dashboard'])}")
+    return "\n".join(lines)
+
+
+async def _run_sync(report_date) -> dict:
+    _ensure_login()
+    return await sync_day(umag, report_date)
+
+
+@dp.message(F.text == "/sync")
+async def sync_command(message: Message):
+    if not DASHBOARD_DATABASE_URL:
+        await message.answer("DASHBOARD_DATABASE_URL не настроен — синхронизация с дашбордом отключена.")
+        return
+    status = await message.answer("Синхронизирую сегодняшние продажи с KPI-дашбордом...")
+    try:
+        summary = await _run_sync(datetime.now().date())
+    except Exception as e:
+        log.exception("Manual sync failed")
+        await status.edit_text(f"⚠️ Синхронизация не удалась: {e}")
+        return
+    await status.edit_text(_format_sync_summary(summary))
+
+
+async def _scheduled_sync():
+    if not DASHBOARD_DATABASE_URL:
+        return
+    log.info("Running scheduled daily sync")
+    try:
+        summary = await _run_sync(datetime.now().date())
+        text = _format_sync_summary(summary)
+    except Exception as e:
+        log.exception("Scheduled sync failed")
+        text = f"⚠️ Ежедневная синхронизация не удалась: {e}"
+    for user_id in SYNC_NOTIFY_USER_IDS:
+        try:
+            await bot.send_message(user_id, text)
+        except Exception:
+            log.exception("Failed to notify user %s about sync result", user_id)
+
+
 @dp.errors()
 async def error_handler(event: ErrorEvent):
     log.exception("Unhandled error while processing update", exc_info=event.exception)
@@ -195,6 +252,15 @@ async def _run_health_server():
 
 async def main():
     await _run_health_server()
+
+    if DASHBOARD_DATABASE_URL:
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(_scheduled_sync, "cron", hour=SYNC_HOUR, minute=SYNC_MINUTE)
+        scheduler.start()
+        log.info("Daily UMAG->dashboard sync scheduled at %02d:%02d", SYNC_HOUR, SYNC_MINUTE)
+    else:
+        log.info("DASHBOARD_DATABASE_URL not set — daily dashboard sync disabled")
+
     await dp.start_polling(bot)
 
 
