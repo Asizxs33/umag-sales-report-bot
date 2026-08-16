@@ -152,10 +152,16 @@ class UmagClient:
         raise UmagError("No virtual (manual-entry) POS found for this store")
 
     def _list_sales(
-        self, date_from: datetime, date_to: datetime, seller_id: int | None = None, all_pos: bool = False
+        self,
+        date_from: datetime,
+        date_to: datetime,
+        seller_id: int | None = None,
+        all_pos: bool = False,
+        exclude_unpaid: bool = True,
     ) -> dict:
         """Shared paging/debt-filtering logic behind sale_stats() and
-        store_total_sales() -- see those for the all_pos semantics."""
+        store_total_sales() -- see those for the all_pos/exclude_unpaid
+        semantics."""
         pos_id = None if all_pos else self._find_manual_pos_id()
         page_size = 500
         first = 0
@@ -180,8 +186,8 @@ class UmagClient:
                 break
             first += page_size
 
-        paid_sales = [s for s in all_sales if s["id"] not in unpaid_ids]
-        return {"count": len(paid_sales), "saleAmount": sum(s["amount"] for s in paid_sales)}
+        sales = [s for s in all_sales if s["id"] not in unpaid_ids] if exclude_unpaid else all_sales
+        return {"count": len(sales), "saleAmount": sum(s["amount"] for s in sales)}
 
     def sale_stats(self, seller_id: int, date_from: datetime, date_to: datetime, all_pos: bool = False) -> dict:
         """{'count': int, 'saleAmount': float} for one seller over a period.
@@ -208,7 +214,12 @@ class UmagClient:
         """{'count': int, 'saleAmount': float} for the WHOLE store over a
         period -- no seller filter, so this includes sales not tagged to
         any specific "Продавцы" item (e.g. an "Online"/aggregate bucket) as
-        well as every named seller's sales. Matches UMAG's own "Отчёт
-        прибыль/убытки" revenue figure for the store, unlike summing
-        sale_stats() per named seller which only covers tracked sellers."""
-        return self._list_sales(date_from, date_to, seller_id=None, all_pos=all_pos)
+        well as every named seller's sales.
+
+        exclude_unpaid=False (unlike sale_stats): UMAG's own "Отчёт
+        прибыль/убытки" "Выручка" figure counts every sale regardless of
+        outstanding balance -- confirmed live 2026-08-16 (Iposuda, matched
+        to within 0.3%). sale_stats() intentionally keeps excluding unpaid
+        sales for personal seller KPI tracking; this is a different,
+        accounting-style total, so it does not."""
+        return self._list_sales(date_from, date_to, seller_id=None, all_pos=all_pos, exclude_unpaid=False)

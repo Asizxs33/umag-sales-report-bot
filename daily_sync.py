@@ -36,11 +36,14 @@ DASHBOARD_DATABASE_URL = os.environ.get("DASHBOARD_DATABASE_URL", "")
 # точке UMAG целиком, а не только сумму по отслеживаемым сотрудникам
 # (см. Settings.ikidsOnlineActual / totalRevenueActual в схеме дашборда).
 # Значение (settings_column, all_pos) -- all_pos определяет, учитывать ли
-# обычные чеки с кассы-терминала в дополнение к ручным накладным: для
-# Iposuda сохранён тот же канал, что и у отслеживаемых там сотрудников
-# (только накладные), для Kids -- оба канала (см. sale_stats()/employees.py).
+# обычные чеки с кассы-терминала в дополнение к ручным накладным. И для
+# Iposuda, и для Kids используется all_pos=True -- store_total_sales()
+# считает выручку по точке целиком, как в отчёте UMAG "Прибыль/убытки"
+# (подтверждено live 2026-08-16 для Iposuda, совпадение с точностью
+# до 0.3%), в отличие от sale_stats() по отслеживаемым сотрудникам, где
+# для Iposuda намеренно остаётся только канал накладных.
 STORE_TOTAL_SETTINGS_COLUMN = {
-    "Iposuda": ("total_revenue_actual", False),
+    "Iposuda": ("total_revenue_actual", True),
     "Kids": ("ikids_online_actual", True),
 }
 
