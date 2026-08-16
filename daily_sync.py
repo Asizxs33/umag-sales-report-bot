@@ -43,7 +43,6 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
 
     if umag.store_id is None:
         umag.login()
-        umag.ensure_store()
 
     date_from = datetime(report_date.year, report_date.month, report_date.day)
     date_to = date_from.replace(hour=23, minute=59, second=59, microsecond=999000)
@@ -57,41 +56,48 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
         not_in_umag: list[str] = []
         not_in_dashboard: list[str] = []
 
-        for emp in EMPLOYEES:
-            employee_id = by_name.get(_normalize(emp["name"]))
-            if employee_id is None:
-                not_in_dashboard.append(emp["name"])
-                continue
+        stores_needed = sorted({emp.get("store", "Iposuda") for emp in EMPLOYEES})
+        for store_name in stores_needed:
+            umag.select_store(store_name)
 
-            seller = umag.find_seller(emp["name"])
-            if not seller:
-                not_in_umag.append(emp["name"])
-                continue
+            for emp in EMPLOYEES:
+                if emp.get("store", "Iposuda") != store_name:
+                    continue
 
-            stats = umag.sale_stats(seller["id"], date_from, date_to)
+                employee_id = by_name.get(_normalize(emp["name"]))
+                if employee_id is None:
+                    not_in_dashboard.append(emp["name"])
+                    continue
 
-            # Postgres-миграция Prisma по умолчанию создаёт нативный enum-тип
-            # "LogType" -- отсюда явный каст. Если после первого прогона
-            # `prisma migrate dev` на Neon окажется, что поле хранится как
-            # обычный TEXT, убери `::"LogType"` из запроса ниже.
-            await conn.execute(
-                """
-                INSERT INTO log_entries
-                    (id, type, date, employee_id, source, sales_amount, customers_served, created_at)
-                VALUES
-                    ($1, 'UPSELL'::"LogType", $2, $3, 'umag-daily', $4, $5, now())
-                ON CONFLICT (employee_id, date, source, type)
-                DO UPDATE SET
-                    sales_amount = EXCLUDED.sales_amount,
-                    customers_served = EXCLUDED.customers_served
-                """,
-                str(uuid.uuid4()),
-                report_date.isoformat(),
-                employee_id,
-                int(stats["saleAmount"]),
-                stats["count"],
-            )
-            synced.append(emp["name"])
+                seller = umag.find_seller(emp["name"])
+                if not seller:
+                    not_in_umag.append(emp["name"])
+                    continue
+
+                stats = umag.sale_stats(seller["id"], date_from, date_to)
+
+                # Postgres-миграция Prisma по умолчанию создаёт нативный enum-тип
+                # "LogType" -- отсюда явный каст. Если после первого прогона
+                # `prisma migrate dev` на Neon окажется, что поле хранится как
+                # обычный TEXT, убери `::"LogType"` из запроса ниже.
+                await conn.execute(
+                    """
+                    INSERT INTO log_entries
+                        (id, type, date, employee_id, source, sales_amount, customers_served, created_at)
+                    VALUES
+                        ($1, 'UPSELL'::"LogType", $2, $3, 'umag-daily', $4, $5, now())
+                    ON CONFLICT (employee_id, date, source, type)
+                    DO UPDATE SET
+                        sales_amount = EXCLUDED.sales_amount,
+                        customers_served = EXCLUDED.customers_served
+                    """,
+                    str(uuid.uuid4()),
+                    report_date.isoformat(),
+                    employee_id,
+                    int(stats["saleAmount"]),
+                    stats["count"],
+                )
+                synced.append(emp["name"])
 
         return {
             "date": report_date.isoformat(),

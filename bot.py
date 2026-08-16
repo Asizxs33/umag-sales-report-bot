@@ -75,7 +75,7 @@ dp.callback_query.outer_middleware(AccessMiddleware())
 def _ensure_login():
     if umag.store_id is None:
         umag.login()
-        umag.ensure_store()
+        umag.select_store("Iposuda")
 
 
 def _period_menu_markup() -> InlineKeyboardMarkup:
@@ -149,22 +149,26 @@ async def _send_report(message: Message, report_date):
 
     rows = []
     not_found = []
-    for emp in EMPLOYEES:
-        seller = umag.find_seller(emp["name"])
-        if not seller:
-            not_found.append(emp["name"])
-            stats = {"count": 0, "saleAmount": 0}
-        else:
-            stats = umag.sale_stats(seller["id"], date_from, date_to)
-        rows.append(
-            {
-                "name": emp["name"],
-                "position": emp["position"],
-                "plan": emp["plan"],
-                "count": stats["count"],
-                "amount": stats["saleAmount"],
-            }
-        )
+    for store_name in sorted({emp.get("store", "Iposuda") for emp in EMPLOYEES}):
+        umag.select_store(store_name)
+        for emp in EMPLOYEES:
+            if emp.get("store", "Iposuda") != store_name:
+                continue
+            seller = umag.find_seller(emp["name"])
+            if not seller:
+                not_found.append(emp["name"])
+                stats = {"count": 0, "saleAmount": 0}
+            else:
+                stats = umag.sale_stats(seller["id"], date_from, date_to)
+            rows.append(
+                {
+                    "name": emp["name"],
+                    "position": emp["position"],
+                    "plan": emp["plan"],
+                    "count": stats["count"],
+                    "amount": stats["saleAmount"],
+                }
+            )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         out_path = os.path.join(tmp_dir, f"Отчет_продажи_{report_date.strftime('%d.%m.%Y')}.xlsx")

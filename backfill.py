@@ -38,8 +38,7 @@ async def main():
         sys.exit(1)
 
     umag = UmagClient(UMAG_PHONE, UMAG_PASSWORD)
-    umag.login()
-    umag.ensure_store()
+    umag.login()  # sync_day() selects the right store per employee below
 
     day = start
     while day <= end:

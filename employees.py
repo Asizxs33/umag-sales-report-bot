@@ -4,6 +4,11 @@ This is business data set by the store manager (not something UMAG exposes
 via API) -- edit this list whenever the team or the plans change. `name`
 just needs to be recognizable; matching against UMAG's "Продавцы" list is
 fuzzy (handles reversed word order and small typos).
+
+`store` selects which UMAG retail point (see UmagClient.select_store) the
+employee's sales are pulled from -- defaults to "Iposuda" when omitted.
+This account has multiple retail points ("Iposuda", "Kids", "Dubai Gold");
+Ikids (2 этаж) sells under the "Kids" point in UMAG.
 """
 
 EMPLOYEES = [
@@ -28,4 +33,11 @@ EMPLOYEES = [
     # /report; в KPI-дашборде у них хранится настоящий месячный план напрямую.
     {"name": "Юлдашбекова Мухлиса", "position": "Оператор", "plan": 1_261_096},
     {"name": "Артыкова Лолахон", "position": "Оператор", "plan": 384_615},
+    # Ikids (2 этаж) -- отдельная торговая точка в UMAG ("Kids"). Планы
+    # даны как месячные (10 000 000 каждому), здесь пересчитаны на дневной
+    # (/26 рабочих дней) для дневного отчёта /report, как и у остальных.
+    {"name": "Илашбеков Ахрар", "position": "Продавец", "plan": 384_615, "store": "Kids"},
+    {"name": "Султанмурадова Шахноза", "position": "Продавец", "plan": 384_615, "store": "Kids"},
+    {"name": "Бахтиярова Дияра", "position": "Продавец", "plan": 384_615, "store": "Kids"},
+    {"name": "Нишанбаева Анеля", "position": "Продавец", "plan": 384_615, "store": "Kids"},
 ]

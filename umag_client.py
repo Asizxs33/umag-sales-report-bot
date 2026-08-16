@@ -43,12 +43,29 @@ class UmagClient:
             raise UmagError(f"Login failed: {resp.status_code} {resp.text}")
         self._session_token = resp.json()["sessionToken"]
 
-    def ensure_store(self) -> None:
+    def list_stores(self) -> list[dict]:
         stores = self._get("/org/store/list")
-        stores = stores if isinstance(stores, list) else stores.get("data", stores)
+        return stores if isinstance(stores, list) else stores.get("data", stores)
+
+    def ensure_store(self) -> None:
+        stores = self.list_stores()
         if not stores:
             raise UmagError("No stores available on this account")
         self.store_id = stores[0]["id"]
+
+    def select_store(self, name: str) -> None:
+        """Switches the active store by (partial, case-insensitive) name --
+        this account has multiple retail points (e.g. "Iposuda", "Kids",
+        "Dubai Gold"), each with its own custom-field / manual-POS ids, so
+        those per-store caches are reset on switch."""
+        stores = self.list_stores()
+        match = next((s for s in stores if name.lower() in s["name"].lower()), None)
+        if not match:
+            names = ", ".join(s["name"] for s in stores)
+            raise UmagError(f'Store "{name}" not found among: {names}')
+        self.store_id = match["id"]
+        self._seller_field_id = None
+        self._manual_pos_id = None
 
     def _headers(self, auth: str | None = None) -> dict[str, str]:
         h = {"client-ver": CLIENT_VER, "api-ver": API_VER, "Content-Type": "application/json"}
