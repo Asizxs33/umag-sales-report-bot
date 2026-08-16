@@ -34,8 +34,15 @@ DASHBOARD_DATABASE_URL = os.environ.get("DASHBOARD_DATABASE_URL", "")
 # указанную колонку settings. Нужно там, где на дашборде есть отдельная
 # карточка "Общая выручка <отдел>", которая должна показывать факт по
 # точке UMAG целиком, а не только сумму по отслеживаемым сотрудникам
-# (см. Settings.ikidsOnlineActual в схеме дашборда).
-STORE_TOTAL_SETTINGS_COLUMN = {"Kids": "ikids_online_actual"}
+# (см. Settings.ikidsOnlineActual / totalRevenueActual в схеме дашборда).
+# Значение (settings_column, all_pos) -- all_pos определяет, учитывать ли
+# обычные чеки с кассы-терминала в дополнение к ручным накладным: для
+# Iposuda сохранён тот же канал, что и у отслеживаемых там сотрудников
+# (только накладные), для Kids -- оба канала (см. sale_stats()/employees.py).
+STORE_TOTAL_SETTINGS_COLUMN = {
+    "Iposuda": ("total_revenue_actual", False),
+    "Kids": ("ikids_online_actual", True),
+}
 
 
 def _normalize(name: str) -> str:
@@ -107,10 +114,11 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
                 )
                 synced.append(emp["name"])
 
-            settings_column = STORE_TOTAL_SETTINGS_COLUMN.get(store_name)
-            if settings_column:
+            store_total_entry = STORE_TOTAL_SETTINGS_COLUMN.get(store_name)
+            if store_total_entry:
+                settings_column, total_all_pos = store_total_entry
                 month_start = datetime(report_date.year, report_date.month, 1)
-                total = umag.store_total_sales(month_start, date_to)
+                total = umag.store_total_sales(month_start, date_to, all_pos=total_all_pos)
                 await conn.execute(
                     f'UPDATE settings SET {settings_column} = $1 WHERE id = $2',
                     int(total["saleAmount"]),
