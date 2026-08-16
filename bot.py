@@ -159,7 +159,7 @@ async def _send_report(message: Message, report_date):
                 not_found.append(emp["name"])
                 stats = {"count": 0, "saleAmount": 0}
             else:
-                stats = umag.sale_stats(seller["id"], date_from, date_to, all_pos=emp.get("all_pos", False))
+                stats = umag.sale_stats(seller["id"], date_from, date_to, all_pos=True)
             rows.append(
                 {
                     "name": emp["name"],

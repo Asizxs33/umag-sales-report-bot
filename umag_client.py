@@ -189,19 +189,17 @@ class UmagClient:
         sales = [s for s in all_sales if s["id"] not in unpaid_ids] if exclude_unpaid else all_sales
         return {"count": len(sales), "saleAmount": sum(s["amount"] for s in sales)}
 
-    def sale_stats(self, seller_id: int, date_from: datetime, date_to: datetime, all_pos: bool = False) -> dict:
+    def sale_stats(self, seller_id: int, date_from: datetime, date_to: datetime, all_pos: bool = True) -> dict:
         """{'count': int, 'saleAmount': float} for one seller over a period.
 
-        all_pos=False (default): scoped to the virtual manual-entry POS
-          (see _find_manual_pos_id), matching exactly what the "Продажи"
-          (накладные) list shows -- same as that page's default filter,
-          confirmed live 2026-08-14. This excludes ordinary POS-terminal
-          retail receipts (чеки). This is the tracked sales process for
-          Iposuda -- продавцы там оформляют накладные вручную.
-        all_pos=True: no posId filter -- counts sales across every POS at
-          the store (manual invoices AND physical terminal receipts/чеки).
-          Use for stores where sellers ring up regular checkout receipts
-          instead of (or in addition to) manual invoices, e.g. Kids.
+        all_pos=True (default): no posId filter -- counts sales across
+          every POS at the store (manual invoices/накладные AND physical
+          terminal receipts/чеки). Confirmed live 2026-08-16 that sellers
+          across stores (Iposuda included) ring up both channels, so this
+          is the default everywhere now.
+        all_pos=False: scoped to just the virtual manual-entry POS (see
+          _find_manual_pos_id) -- matches exactly what the "Продажи"
+          (накладные) list shows, i.e. manual invoices only.
 
         Either way, excludes any sale that currently has an outstanding
         balance ("Осталось" > 0 / shown red) -- `list-without-products`

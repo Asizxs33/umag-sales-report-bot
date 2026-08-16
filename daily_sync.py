@@ -92,7 +92,7 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
                     not_in_umag.append(emp["name"])
                     continue
 
-                stats = umag.sale_stats(seller["id"], date_from, date_to, all_pos=emp.get("all_pos", False))
+                stats = umag.sale_stats(seller["id"], date_from, date_to, all_pos=True)
 
                 # Postgres-миграция Prisma по умолчанию создаёт нативный enum-тип
                 # "LogType" -- отсюда явный каст. Если после первого прогона
