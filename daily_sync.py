@@ -29,6 +29,14 @@ log = logging.getLogger("daily_sync")
 
 DASHBOARD_DATABASE_URL = os.environ.get("DASHBOARD_DATABASE_URL", "")
 
+# После синхронизации сотрудников этой точки -- также затянуть суммарную
+# выручку по точке целиком (без привязки к продавцу, месяц-к-дате) в
+# указанную колонку settings. Нужно там, где на дашборде есть отдельная
+# карточка "Общая выручка <отдел>", которая должна показывать факт по
+# точке UMAG целиком, а не только сумму по отслеживаемым сотрудникам
+# (см. Settings.ikidsOnlineActual в схеме дашборда).
+STORE_TOTAL_SETTINGS_COLUMN = {"Kids": "ikids_online_actual"}
+
 
 def _normalize(name: str) -> str:
     return " ".join(name.strip().lower().split())
@@ -98,6 +106,16 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
                     stats["count"],
                 )
                 synced.append(emp["name"])
+
+            settings_column = STORE_TOTAL_SETTINGS_COLUMN.get(store_name)
+            if settings_column:
+                month_start = datetime(report_date.year, report_date.month, 1)
+                total = umag.store_total_sales(month_start, date_to)
+                await conn.execute(
+                    f'UPDATE settings SET {settings_column} = $1 WHERE id = $2',
+                    int(total["saleAmount"]),
+                    "singleton",
+                )
 
         return {
             "date": report_date.isoformat(),

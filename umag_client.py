@@ -151,6 +151,38 @@ class UmagClient:
                 return pos["id"]
         raise UmagError("No virtual (manual-entry) POS found for this store")
 
+    def _list_sales(
+        self, date_from: datetime, date_to: datetime, seller_id: int | None = None, all_pos: bool = False
+    ) -> dict:
+        """Shared paging/debt-filtering logic behind sale_stats() and
+        store_total_sales() -- see those for the all_pos semantics."""
+        pos_id = None if all_pos else self._find_manual_pos_id()
+        page_size = 500
+        first = 0
+        all_sales: list[dict] = []
+        unpaid_ids: set[int] = set()
+        while True:
+            params: dict[str, Any] = {
+                "first": first,
+                "pageSize": page_size,
+                "fromTime": int(date_from.timestamp() * 1000),
+                "toTime": int(date_to.timestamp() * 1000),
+                "storeId": self.store_id,
+            }
+            if seller_id is not None:
+                params["customFieldItemId"] = seller_id
+            if pos_id is not None:
+                params["posId"] = pos_id
+            data = self._get("/opr/sale/list-without-products", params=params)
+            all_sales.extend(data.get("sales", []))
+            unpaid_ids.update(d["saleId"] for d in data.get("debts", []))
+            if len(all_sales) >= data.get("count", 0) or not data.get("sales"):
+                break
+            first += page_size
+
+        paid_sales = [s for s in all_sales if s["id"] not in unpaid_ids]
+        return {"count": len(paid_sales), "saleAmount": sum(s["amount"] for s in paid_sales)}
+
     def sale_stats(self, seller_id: int, date_from: datetime, date_to: datetime, all_pos: bool = False) -> dict:
         """{'count': int, 'saleAmount': float} for one seller over a period.
 
@@ -170,28 +202,13 @@ class UmagClient:
         returns a `debts` array of {saleId, amount} for exactly those
         sales, which `list-all`'s aggregate stats don't expose per-sale.
         """
-        pos_id = None if all_pos else self._find_manual_pos_id()
-        page_size = 500
-        first = 0
-        all_sales: list[dict] = []
-        unpaid_ids: set[int] = set()
-        while True:
-            params = {
-                "customFieldItemId": seller_id,
-                "first": first,
-                "pageSize": page_size,
-                "fromTime": int(date_from.timestamp() * 1000),
-                "toTime": int(date_to.timestamp() * 1000),
-                "storeId": self.store_id,
-            }
-            if pos_id is not None:
-                params["posId"] = pos_id
-            data = self._get("/opr/sale/list-without-products", params=params)
-            all_sales.extend(data.get("sales", []))
-            unpaid_ids.update(d["saleId"] for d in data.get("debts", []))
-            if len(all_sales) >= data.get("count", 0) or not data.get("sales"):
-                break
-            first += page_size
+        return self._list_sales(date_from, date_to, seller_id=seller_id, all_pos=all_pos)
 
-        paid_sales = [s for s in all_sales if s["id"] not in unpaid_ids]
-        return {"count": len(paid_sales), "saleAmount": sum(s["amount"] for s in paid_sales)}
+    def store_total_sales(self, date_from: datetime, date_to: datetime, all_pos: bool = True) -> dict:
+        """{'count': int, 'saleAmount': float} for the WHOLE store over a
+        period -- no seller filter, so this includes sales not tagged to
+        any specific "Продавцы" item (e.g. an "Online"/aggregate bucket) as
+        well as every named seller's sales. Matches UMAG's own "Отчёт
+        прибыль/убытки" revenue figure for the store, unlike summing
+        sale_stats() per named seller which only covers tracked sellers."""
+        return self._list_sales(date_from, date_to, seller_id=None, all_pos=all_pos)
