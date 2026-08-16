@@ -151,18 +151,26 @@ class UmagClient:
                 return pos["id"]
         raise UmagError("No virtual (manual-entry) POS found for this store")
 
-    def sale_stats(self, seller_id: int, date_from: datetime, date_to: datetime) -> dict:
-        """{'count': int, 'saleAmount': float} for one seller over a period,
-        matching exactly what the "Продажи" (накладные) list shows:
-        - scoped to the virtual manual-entry POS (see _find_manual_pos_id),
-          same as that page's default filter -- confirmed live 2026-08-14
-          this excludes ordinary POS-terminal retail receipts;
-        - excludes any sale that currently has an outstanding balance
-          ("Осталось" > 0 / shown red) -- `list-without-products` returns a
-          `debts` array of {saleId, amount} for exactly those sales, which
-          `list-all`'s aggregate stats don't expose per-sale.
+    def sale_stats(self, seller_id: int, date_from: datetime, date_to: datetime, all_pos: bool = False) -> dict:
+        """{'count': int, 'saleAmount': float} for one seller over a period.
+
+        all_pos=False (default): scoped to the virtual manual-entry POS
+          (see _find_manual_pos_id), matching exactly what the "Продажи"
+          (накладные) list shows -- same as that page's default filter,
+          confirmed live 2026-08-14. This excludes ordinary POS-terminal
+          retail receipts (чеки). This is the tracked sales process for
+          Iposuda -- продавцы там оформляют накладные вручную.
+        all_pos=True: no posId filter -- counts sales across every POS at
+          the store (manual invoices AND physical terminal receipts/чеки).
+          Use for stores where sellers ring up regular checkout receipts
+          instead of (or in addition to) manual invoices, e.g. Kids.
+
+        Either way, excludes any sale that currently has an outstanding
+        balance ("Осталось" > 0 / shown red) -- `list-without-products`
+        returns a `debts` array of {saleId, amount} for exactly those
+        sales, which `list-all`'s aggregate stats don't expose per-sale.
         """
-        pos_id = self._find_manual_pos_id()
+        pos_id = None if all_pos else self._find_manual_pos_id()
         page_size = 500
         first = 0
         all_sales: list[dict] = []
@@ -170,13 +178,14 @@ class UmagClient:
         while True:
             params = {
                 "customFieldItemId": seller_id,
-                "posId": pos_id,
                 "first": first,
                 "pageSize": page_size,
                 "fromTime": int(date_from.timestamp() * 1000),
                 "toTime": int(date_to.timestamp() * 1000),
                 "storeId": self.store_id,
             }
+            if pos_id is not None:
+                params["posId"] = pos_id
             data = self._get("/opr/sale/list-without-products", params=params)
             all_sales.extend(data.get("sales", []))
             unpaid_ids.update(d["saleId"] for d in data.get("debts", []))
