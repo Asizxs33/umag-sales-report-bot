@@ -6,11 +6,11 @@ asyncpg -- без HTTP, дашборду не обязательно быть п
 (employee_id, date, source, type) -- повторный прогон за тот же день
 обновляет существующую запись, а не плодит дубликаты.
 
-Сопоставление сотрудников: имя из employees.py ищем СТРОГИМ (без учёта
-регистра/пробелов) совпадением по employees.full_name в БД дашборда --
-роспись имён в employees.py считается каноничной и в дашборде должна быть
-заведена один в один. Если сотрудника в БД дашборда нет -- запись
-пропускается с предупреждением в лог, а не создаётся "на угад".
+Список сотрудников читается напрямую из таблицы employees БД дашборда
+(активные, active=true) -- добавление/редактирование сотрудника на
+странице «Сотрудники» дашборда сразу подхватывается следующим прогоном
+синхронизации, без изменений кода бота. Сопоставление с продавцом в
+UMAG идёт по имени через нечёткий поиск (см. UmagClient.find_seller).
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from datetime import date, datetime
 
 import asyncpg
 
-from employees import EMPLOYEES
+from employees import DEPARTMENT_TO_STORE
 from umag_client import UmagClient, UmagError
 
 log = logging.getLogger("daily_sync")
@@ -40,21 +40,17 @@ DASHBOARD_DATABASE_URL = os.environ.get("DASHBOARD_DATABASE_URL", "")
 # Iposuda, и для Kids используется all_pos=True -- store_total_sales()
 # считает выручку по точке целиком, как в отчёте UMAG "Прибыль/убытки"
 # (подтверждено live 2026-08-16 для Iposuda, совпадение с точностью
-# до 0.3%), в отличие от sale_stats() по отслеживаемым сотрудникам, где
-# для Iposuda намеренно остаётся только канал накладных.
+# до 0.3%).
 STORE_TOTAL_SETTINGS_COLUMN = {
     "Iposuda": ("total_revenue_actual", True),
     "Kids": ("ikids_online_actual", True),
 }
 
 
-def _normalize(name: str) -> str:
-    return " ".join(name.strip().lower().split())
-
-
 async def sync_day(umag: UmagClient, report_date: date) -> dict:
-    """Тянет продажи каждого сотрудника из UMAG за report_date и пишет их
-    в log_entries базы дашборда. Возвращает сводку для уведомления/логов."""
+    """Тянет продажи каждого активного сотрудника дашборда из UMAG за
+    report_date и пишет их в log_entries. Возвращает сводку для
+    уведомления/логов."""
 
     if not DASHBOARD_DATABASE_URL:
         raise RuntimeError("DASHBOARD_DATABASE_URL не задан -- нечего синхронизировать")
@@ -67,24 +63,25 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
 
     conn = await asyncpg.connect(DASHBOARD_DATABASE_URL)
     try:
-        rows = await conn.fetch("SELECT id, full_name FROM employees")
-        by_name = {_normalize(r["full_name"]): r["id"] for r in rows}
+        rows = await conn.fetch("SELECT id, full_name, department FROM employees WHERE active = true")
+        employees = [
+            {
+                "id": r["id"],
+                "name": r["full_name"],
+                "store": DEPARTMENT_TO_STORE.get(r["department"], "Iposuda"),
+            }
+            for r in rows
+        ]
 
         synced: list[str] = []
         not_in_umag: list[str] = []
-        not_in_dashboard: list[str] = []
 
-        stores_needed = sorted({emp.get("store", "Iposuda") for emp in EMPLOYEES})
+        stores_needed = sorted({emp["store"] for emp in employees})
         for store_name in stores_needed:
             umag.select_store(store_name)
 
-            for emp in EMPLOYEES:
-                if emp.get("store", "Iposuda") != store_name:
-                    continue
-
-                employee_id = by_name.get(_normalize(emp["name"]))
-                if employee_id is None:
-                    not_in_dashboard.append(emp["name"])
+            for emp in employees:
+                if emp["store"] != store_name:
                     continue
 
                 seller = umag.find_seller(emp["name"])
@@ -111,7 +108,7 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
                     """,
                     str(uuid.uuid4()),
                     report_date.isoformat(),
-                    employee_id,
+                    emp["id"],
                     int(stats["saleAmount"]),
                     stats["count"],
                 )
@@ -132,7 +129,7 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
             "date": report_date.isoformat(),
             "synced": synced,
             "not_in_umag": not_in_umag,
-            "not_in_dashboard": not_in_dashboard,
+            "not_in_dashboard": [],
         }
     finally:
         await conn.close()

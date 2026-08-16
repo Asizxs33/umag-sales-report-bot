@@ -33,7 +33,7 @@ from config import (
     UMAG_PHONE,
 )
 from daily_sync import sync_day
-from employees import EMPLOYEES
+from employees import load_employees
 from report import build_report
 from umag_client import UmagClient, UmagError
 
@@ -144,14 +144,20 @@ async def _send_report(message: Message, report_date):
 
     status = await message.answer(f"Собираю отчёт за {report_date.strftime('%d.%m.%Y')}...")
 
+    try:
+        employees = await load_employees()
+    except RuntimeError as e:
+        await status.edit_text(f"⚠️ {e}")
+        return
+
     date_from = datetime(report_date.year, report_date.month, report_date.day)
     date_to = date_from.replace(hour=23, minute=59, second=59, microsecond=999000)
 
     rows = []
     not_found = []
-    for store_name in sorted({emp.get("store", "Iposuda") for emp in EMPLOYEES}):
+    for store_name in sorted({emp.get("store", "Iposuda") for emp in employees}):
         umag.select_store(store_name)
-        for emp in EMPLOYEES:
+        for emp in employees:
             if emp.get("store", "Iposuda") != store_name:
                 continue
             seller = umag.find_seller(emp["name"])

@@ -1,43 +1,53 @@
-"""Sales team roster: each seller's role and daily/period sales plan.
-
-This is business data set by the store manager (not something UMAG exposes
-via API) -- edit this list whenever the team or the plans change. `name`
-just needs to be recognizable; matching against UMAG's "Продавцы" list is
-fuzzy (handles reversed word order and small typos).
-
-`store` selects which UMAG retail point (see UmagClient.select_store) the
-employee's sales are pulled from -- defaults to "Iposuda" when omitted.
-This account has multiple retail points ("Iposuda", "Kids", "Dubai Gold");
-Ikids (2 этаж) sells under the "Kids" point in UMAG.
+"""Sales team roster -- sourced live from the KPI dashboard's own Postgres
+database (single source of truth), not hardcoded here. Add/edit employees
+on the dashboard's "Сотрудники" page and the bot picks them up on the next
+sync/report automatically -- no code change or redeploy needed.
 """
 
-EMPLOYEES = [
-    # Халметова Наргиза (РОП) намеренно исключена: в UMAG на неё была
-    # подвязана агрегированная выручка магазина, а не личные продажи --
-    # теперь это отдельная метрика "Общая выручка" в KPI-дашборде
-    # (Settings.totalRevenuePlan), не привязанная к конкретному сотруднику.
-    {"name": "Толегенова Дилнора", "position": "Ст-прод", "plan": 1_347_000},
-    {"name": "Яхьяева Зиеда", "position": "Ст-прод", "plan": 1_347_000},
-    {"name": "Турдалиева Шахноза", "position": "Ст-прод", "plan": 1_924_000},
-    {"name": "Болусов Сардор", "position": "Продавец", "plan": 1_731_000},
-    {"name": "Абдимажитов Рустам", "position": "Т-Продавец", "plan": 2_170_000},
-    {"name": "Худайбергенова Лайло", "position": "Продавец", "plan": 962_000},
-    {"name": "Годеридзе Эмина", "position": "Продавец", "plan": 1_154_000},
-    {"name": "Эшметов Дилшат", "position": "Продавец", "plan": 1_154_000},
-    {"name": "Файзуллаева Ару", "position": "Продавец", "plan": 770_000},
-    {"name": "Болусова Чарос", "position": "Продавец", "plan": 770_000},
-    {"name": "Ишанкулов Санжар", "position": "Продавец", "plan": 577_000},
-    {"name": "Базарбай Асел", "position": "Продавец", "plan": 577_000},
-    # Колл-центр. Управляющий дал план как месячный (32 787 500 и 10 000 000) --
-    # здесь он пересчитан на дневной (/26 рабочих дней) для дневного отчёта
-    # /report; в KPI-дашборде у них хранится настоящий месячный план напрямую.
-    {"name": "Юлдашбекова Мухлиса", "position": "Оператор", "plan": 1_261_096},
-    {"name": "Артыкова Лолахон", "position": "Оператор", "plan": 384_615},
-    # Ikids (2 этаж) -- отдельная торговая точка в UMAG ("Kids"). Планы
-    # даны как месячные (10 000 000 каждому), здесь пересчитаны на дневной
-    # (/26 рабочих дней) для дневного отчёта /report, как и у остальных.
-    {"name": "Илашбеков Ахрар", "position": "Продавец", "plan": 384_615, "store": "Kids"},
-    {"name": "Султанмурадова Шахноза", "position": "Продавец", "plan": 384_615, "store": "Kids"},
-    {"name": "Бахтиярова Дияра", "position": "Продавец", "plan": 384_615, "store": "Kids"},
-    {"name": "Нишанбаева Анеля", "position": "Продавец", "plan": 384_615, "store": "Kids"},
-]
+from __future__ import annotations
+
+import asyncpg
+
+from config import DASHBOARD_DATABASE_URL
+
+# Отдел (department) на дашборде -> торговая точка UMAG, откуда тянутся
+# его продажи. Колл-центр продаёт через тот же UMAG-магазин, что и
+# Iposuda (это не отдельная физическая точка).
+DEPARTMENT_TO_STORE = {
+    "Iposuda": "Iposuda",
+    "Колл-центр": "Iposuda",
+    "Ikids": "Kids",
+}
+
+
+def to_daily_plan(sales_target: int) -> int:
+    """Дашборд хранит план как месячный; дневной отчёт /report сравнивает
+    с дневным планом -- тот же пересчёт (/26 рабочих дней), который раньше
+    делался вручную для каждого сотрудника в этом файле."""
+    return round(sales_target / 26) if sales_target else 0
+
+
+async def load_employees() -> list[dict]:
+    """Загружает активных сотрудников напрямую из БД дашборда: [{name,
+    position, plan, store}]. Открывает собственное соединение -- подходит
+    для мест без уже открытого (например, /report); daily_sync.py делает
+    аналогичный запрос через уже открытое соединение, чтобы не плодить
+    лишние подключения."""
+    if not DASHBOARD_DATABASE_URL:
+        raise RuntimeError("DASHBOARD_DATABASE_URL не задан -- список сотрудников недоступен")
+    conn = await asyncpg.connect(DASHBOARD_DATABASE_URL)
+    try:
+        rows = await conn.fetch(
+            "SELECT full_name, position, department, sales_target FROM employees WHERE active = true ORDER BY created_at"
+        )
+    finally:
+        await conn.close()
+    return [
+        {
+            "name": r["full_name"],
+            "position": r["position"] or "Продавец",
+            "plan": to_daily_plan(r["sales_target"]),
+            "store": DEPARTMENT_TO_STORE.get(r["department"], "Iposuda"),
+        }
+        for r in rows
+    ]

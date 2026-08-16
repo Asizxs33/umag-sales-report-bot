@@ -11,9 +11,10 @@ ALLOWED_TELEGRAM_USER_IDS = [
     int(uid) for uid in os.environ.get("ALLOWED_TELEGRAM_USER_IDS", "").split(",") if uid.strip()
 ]
 
-# Postgres-строка подключения к базе KPI-дашборда (iposuda-kpi-web). Если не
-# задана -- ежедневная синхронизация продаж отключена, но сам бот и команда
-# /report продолжают работать как раньше.
+# Postgres-строка подключения к базе KPI-дашборда (iposuda-kpi-web) --
+# обязательна: список сотрудников (employees.load_employees) теперь
+# читается напрямую оттуда, поэтому без неё не работают ни /report,
+# ни ежедневная синхронизация /sync.
 DASHBOARD_DATABASE_URL = os.environ.get("DASHBOARD_DATABASE_URL", "")
 
 # Время ежедневной авто-синхронизации (локальное время сервера, где крутится бот).
