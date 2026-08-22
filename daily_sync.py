@@ -35,15 +35,17 @@ DASHBOARD_DATABASE_URL = os.environ.get("DASHBOARD_DATABASE_URL", "")
 # карточка "Общая выручка <отдел>", которая должна показывать факт по
 # точке UMAG целиком, а не только сумму по отслеживаемым сотрудникам
 # (см. Settings.ikidsOnlineActual / totalRevenueActual в схеме дашборда).
-# Значение (settings_column, all_pos) -- all_pos определяет, учитывать ли
-# обычные чеки с кассы-терминала в дополнение к ручным накладным. И для
-# Iposuda, и для Kids используется all_pos=True -- store_total_sales()
-# считает выручку по точке целиком, как в отчёте UMAG "Прибыль/убытки"
-# (подтверждено live 2026-08-16 для Iposuda, совпадение с точностью
-# до 0.3%).
+# Значение (settings_column, all_pos, department) -- all_pos определяет,
+# учитывать ли обычные чеки с кассы-терминала в дополнение к ручным
+# накладным. И для Iposuda, и для Kids используется all_pos=True --
+# store_total_sales() считает выручку по точке целиком, как в отчёте UMAG
+# "Прибыль/убытки" (подтверждено live 2026-08-16 для Iposuda, совпадение
+# с точностью до 0.3%). department -- значение Employee.department на
+# дашборде (для записи в store_daily_revenue; НЕ совпадает с названием
+# точки UMAG для Kids/Ikids).
 STORE_TOTAL_SETTINGS_COLUMN = {
-    "Iposuda": ("total_revenue_actual", True),
-    "Kids": ("ikids_online_actual", True),
+    "Iposuda": ("total_revenue_actual", True, "Iposuda"),
+    "Kids": ("ikids_online_actual", True, "Ikids"),
 }
 
 
@@ -116,13 +118,32 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
 
             store_total_entry = STORE_TOTAL_SETTINGS_COLUMN.get(store_name)
             if store_total_entry:
-                settings_column, total_all_pos = store_total_entry
+                settings_column, total_all_pos, department = store_total_entry
+
                 month_start = datetime(report_date.year, report_date.month, 1)
-                total = umag.store_total_sales(month_start, date_to, all_pos=total_all_pos)
+                month_total = umag.store_total_sales(month_start, date_to, all_pos=total_all_pos)
                 await conn.execute(
                     f'UPDATE settings SET {settings_column} = $1 WHERE id = $2',
-                    int(total["saleAmount"]),
+                    int(month_total["saleAmount"]),
                     "singleton",
+                )
+
+                # Тот же расчёт, но только за report_date -- пишется в
+                # store_daily_revenue, чтобы "Общая выручка" на дашборде
+                # могла показывать точный факт за произвольный диапазон
+                # дат, а не только "месяц-к-дате" (см. Settings выше).
+                day_total = umag.store_total_sales(date_from, date_to, all_pos=total_all_pos)
+                await conn.execute(
+                    """
+                    INSERT INTO store_daily_revenue (id, department, date, amount, updated_at)
+                    VALUES ($1, $2, $3, $4, now())
+                    ON CONFLICT (department, date)
+                    DO UPDATE SET amount = EXCLUDED.amount, updated_at = now()
+                    """,
+                    str(uuid.uuid4()),
+                    department,
+                    report_date.isoformat(),
+                    int(day_total["saleAmount"]),
                 )
 
         return {
