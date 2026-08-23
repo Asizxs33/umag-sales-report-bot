@@ -23,6 +23,9 @@ from aiogram.types import (
 )
 
 from config import (
+    ALERT_HOUR,
+    ALERT_MINUTE,
+    ALERT_NOTIFY_USER_IDS,
     ALLOWED_TELEGRAM_USER_IDS,
     DASHBOARD_DATABASE_URL,
     SYNC_HOUR,
@@ -32,6 +35,7 @@ from config import (
     UMAG_PASSWORD,
     UMAG_PHONE,
 )
+from alerts import check_daily_norm, monthly_summary, weekly_summary
 from daily_sync import sync_day
 from employees import load_employees
 from report import build_report
@@ -232,6 +236,63 @@ async def _scheduled_sync():
             log.exception("Failed to notify user %s about sync result", user_id)
 
 
+async def _scheduled_daily_norm_alert():
+    if not DASHBOARD_DATABASE_URL:
+        return
+    yesterday = (datetime.now() - timedelta(days=1)).date()
+    log.info("Checking daily norm for %s", yesterday)
+    try:
+        text = await check_daily_norm(yesterday)
+    except Exception:
+        log.exception("Daily norm check failed")
+        return
+    if not text:
+        return
+    for user_id in ALERT_NOTIFY_USER_IDS:
+        try:
+            await bot.send_message(user_id, text)
+        except Exception:
+            log.exception("Failed to notify user %s about daily norm", user_id)
+
+
+async def _scheduled_weekly_summary():
+    if not DASHBOARD_DATABASE_URL:
+        return
+    week_end = (datetime.now() - timedelta(days=1)).date()
+    log.info("Building weekly summary ending %s", week_end)
+    try:
+        text = await weekly_summary(week_end)
+    except Exception:
+        log.exception("Weekly summary failed")
+        return
+    if not text:
+        return
+    for user_id in ALERT_NOTIFY_USER_IDS:
+        try:
+            await bot.send_message(user_id, text)
+        except Exception:
+            log.exception("Failed to notify user %s about weekly summary", user_id)
+
+
+async def _scheduled_monthly_summary():
+    if not DASHBOARD_DATABASE_URL:
+        return
+    target_month = (datetime.now() - timedelta(days=1)).date()
+    log.info("Building monthly summary for %s", target_month)
+    try:
+        text = await monthly_summary(target_month)
+    except Exception:
+        log.exception("Monthly summary failed")
+        return
+    if not text:
+        return
+    for user_id in ALERT_NOTIFY_USER_IDS:
+        try:
+            await bot.send_message(user_id, text)
+        except Exception:
+            log.exception("Failed to notify user %s about monthly summary", user_id)
+
+
 @dp.errors()
 async def error_handler(event: ErrorEvent):
     log.exception("Unhandled error while processing update", exc_info=event.exception)
@@ -266,8 +327,12 @@ async def main():
     if DASHBOARD_DATABASE_URL:
         scheduler = AsyncIOScheduler()
         scheduler.add_job(_scheduled_sync, "cron", hour=SYNC_HOUR, minute=SYNC_MINUTE)
+        scheduler.add_job(_scheduled_daily_norm_alert, "cron", hour=ALERT_HOUR, minute=ALERT_MINUTE)
+        scheduler.add_job(_scheduled_weekly_summary, "cron", day_of_week="mon", hour=ALERT_HOUR, minute=ALERT_MINUTE)
+        scheduler.add_job(_scheduled_monthly_summary, "cron", day="1", hour=ALERT_HOUR, minute=ALERT_MINUTE)
         scheduler.start()
         log.info("Daily UMAG->dashboard sync scheduled at %02d:%02d", SYNC_HOUR, SYNC_MINUTE)
+        log.info("Daily norm alert / weekly / monthly summaries scheduled at %02d:%02d", ALERT_HOUR, ALERT_MINUTE)
     else:
         log.info("DASHBOARD_DATABASE_URL not set — daily dashboard sync disabled")
 

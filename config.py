@@ -26,3 +26,13 @@ SYNC_MINUTE = int(os.environ.get("SYNC_MINUTE", "30"))
 SYNC_NOTIFY_USER_IDS = [
     int(uid) for uid in os.environ.get("SYNC_NOTIFY_USER_IDS", "").split(",") if uid.strip()
 ] or ALLOWED_TELEGRAM_USER_IDS
+
+# Время проверки дневной нормы (2 отзыва + 2 на 2 этаж за вчера) и кому
+# слать -- по умолчанию всем из ALLOWED_TELEGRAM_USER_IDS, как и остальные
+# уведомления. Запускается утром, чтобы вечерний ввод данных за вчера уже
+# точно попал в базу.
+ALERT_HOUR = int(os.environ.get("ALERT_HOUR", "9"))
+ALERT_MINUTE = int(os.environ.get("ALERT_MINUTE", "0"))
+ALERT_NOTIFY_USER_IDS = [
+    int(uid) for uid in os.environ.get("ALERT_NOTIFY_USER_IDS", "").split(",") if uid.strip()
+] or ALLOWED_TELEGRAM_USER_IDS
