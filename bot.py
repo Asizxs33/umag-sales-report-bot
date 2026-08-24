@@ -28,6 +28,8 @@ from config import (
     ALERT_NOTIFY_USER_IDS,
     ALLOWED_TELEGRAM_USER_IDS,
     DASHBOARD_DATABASE_URL,
+    SUMMARY_HOUR,
+    SUMMARY_MINUTE,
     SYNC_HOUR,
     SYNC_MINUTE,
     SYNC_NOTIFY_USER_IDS,
@@ -258,7 +260,10 @@ async def _scheduled_daily_norm_alert():
 async def _scheduled_weekly_summary():
     if not DASHBOARD_DATABASE_URL:
         return
-    week_end = (datetime.now() - timedelta(days=1)).date()
+    # Запускается в воскресенье вечером, после того как сегодняшняя (=
+    # последнего дня недели) синхронизация уже прошла -- значит неделя
+    # заканчивается СЕГОДНЯ, а не вчера.
+    week_end = datetime.now().date()
     log.info("Building weekly summary ending %s", week_end)
     try:
         text = await weekly_summary(week_end)
@@ -277,7 +282,9 @@ async def _scheduled_weekly_summary():
 async def _scheduled_monthly_summary():
     if not DASHBOARD_DATABASE_URL:
         return
-    target_month = (datetime.now() - timedelta(days=1)).date()
+    # Запускается в последний день месяца вечером, после сегодняшней
+    # синхронизации -- значит месяц заканчивается СЕГОДНЯ, а не вчера.
+    target_month = datetime.now().date()
     log.info("Building monthly summary for %s", target_month)
     try:
         text = await monthly_summary(target_month)
@@ -328,11 +335,15 @@ async def main():
         scheduler = AsyncIOScheduler()
         scheduler.add_job(_scheduled_sync, "cron", hour=SYNC_HOUR, minute=SYNC_MINUTE)
         scheduler.add_job(_scheduled_daily_norm_alert, "cron", hour=ALERT_HOUR, minute=ALERT_MINUTE)
-        scheduler.add_job(_scheduled_weekly_summary, "cron", day_of_week="mon", hour=ALERT_HOUR, minute=ALERT_MINUTE)
-        scheduler.add_job(_scheduled_monthly_summary, "cron", day="1", hour=ALERT_HOUR, minute=ALERT_MINUTE)
+        # Недельная -- в воскресенье вечером (итог только что закончившейся
+        # недели), месячная -- в последний день месяца вечером, оба сразу
+        # после дневной синхронизации (SUMMARY_HOUR/MINUTE), а не наутро.
+        scheduler.add_job(_scheduled_weekly_summary, "cron", day_of_week="sun", hour=SUMMARY_HOUR, minute=SUMMARY_MINUTE)
+        scheduler.add_job(_scheduled_monthly_summary, "cron", day="last", hour=SUMMARY_HOUR, minute=SUMMARY_MINUTE)
         scheduler.start()
         log.info("Daily UMAG->dashboard sync scheduled at %02d:%02d", SYNC_HOUR, SYNC_MINUTE)
-        log.info("Daily norm alert / weekly / monthly summaries scheduled at %02d:%02d", ALERT_HOUR, ALERT_MINUTE)
+        log.info("Daily norm alert scheduled at %02d:%02d", ALERT_HOUR, ALERT_MINUTE)
+        log.info("Weekly (Sun)/monthly (last day) summaries scheduled at %02d:%02d", SUMMARY_HOUR, SUMMARY_MINUTE)
     else:
         log.info("DASHBOARD_DATABASE_URL not set — daily dashboard sync disabled")
 

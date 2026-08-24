@@ -36,3 +36,13 @@ ALERT_MINUTE = int(os.environ.get("ALERT_MINUTE", "0"))
 ALERT_NOTIFY_USER_IDS = [
     int(uid) for uid in os.environ.get("ALERT_NOTIFY_USER_IDS", "").split(",") if uid.strip()
 ] or ALLOWED_TELEGRAM_USER_IDS
+
+# Время недельной/месячной сводки -- вечером того же дня, что и ежедневная
+# синхронизация (SYNC_HOUR/SYNC_MINUTE), с запасом в 15 минут, чтобы день
+# точно успел засинхронизироваться перед тем, как сводка его использует.
+# Недельная -- в воскресенье вечером (итог только что закончившейся
+# недели), месячная -- в последний день месяца вечером (итог только что
+# закончившегося месяца) -- а не наутро, как было раньше (создавало
+# впечатление "ночью отчёт не пришёл", хотя он ещё не должен был прийти).
+SUMMARY_HOUR = int(os.environ.get("SUMMARY_HOUR", str(SYNC_HOUR)))
+SUMMARY_MINUTE = int(os.environ.get("SUMMARY_MINUTE", str(min(59, SYNC_MINUTE + 15))))
