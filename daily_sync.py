@@ -132,18 +132,21 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
                 # store_daily_revenue, чтобы "Общая выручка" на дашборде
                 # могла показывать точный факт за произвольный диапазон
                 # дат, а не только "месяц-к-дате" (см. Settings выше).
+                # debtAmount -- сумма неоплаченных продаж за этот день,
+                # позволяет дашборду показать "чистую" выручку (без долга).
                 day_total = umag.store_total_sales(date_from, date_to, all_pos=total_all_pos)
                 await conn.execute(
                     """
-                    INSERT INTO store_daily_revenue (id, department, date, amount, updated_at)
-                    VALUES ($1, $2, $3, $4, now())
+                    INSERT INTO store_daily_revenue (id, department, date, amount, debt_amount, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, now())
                     ON CONFLICT (department, date)
-                    DO UPDATE SET amount = EXCLUDED.amount, updated_at = now()
+                    DO UPDATE SET amount = EXCLUDED.amount, debt_amount = EXCLUDED.debt_amount, updated_at = now()
                     """,
                     str(uuid.uuid4()),
                     department,
                     report_date.isoformat(),
                     int(day_total["saleAmount"]),
+                    int(day_total["debtAmount"]),
                 )
 
         return {

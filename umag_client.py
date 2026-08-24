@@ -166,7 +166,10 @@ class UmagClient:
         page_size = 500
         first = 0
         all_sales: list[dict] = []
-        unpaid_ids: set[int] = set()
+        # saleId -> оставшаяся неоплаченная сумма ("Осталось", может быть
+        # меньше полной суммы продажи при частичной оплате) -- берём именно
+        # amount из самой записи долга, а не сумму продажи целиком.
+        debts: dict[int, float] = {}
         while True:
             params: dict[str, Any] = {
                 "first": first,
@@ -181,13 +184,21 @@ class UmagClient:
                 params["posId"] = pos_id
             data = self._get("/opr/sale/list-without-products", params=params)
             all_sales.extend(data.get("sales", []))
-            unpaid_ids.update(d["saleId"] for d in data.get("debts", []))
+            for d in data.get("debts", []):
+                debts[d["saleId"]] = d["amount"]
             if len(all_sales) >= data.get("count", 0) or not data.get("sales"):
                 break
             first += page_size
 
+        unpaid_ids = set(debts.keys())
+        # Сумма долга считается по ВСЕМ продажам за период (не только
+        # оставшимся после exclude_unpaid) -- иначе при exclude_unpaid=False
+        # (store_total_sales) долг всегда был бы 0, т.к. неоплаченные уже
+        # не отфильтрованы из sales.
+        debt_amount = sum(debts.values())
+
         sales = [s for s in all_sales if s["id"] not in unpaid_ids] if exclude_unpaid else all_sales
-        return {"count": len(sales), "saleAmount": sum(s["amount"] for s in sales)}
+        return {"count": len(sales), "saleAmount": sum(s["amount"] for s in sales), "debtAmount": debt_amount}
 
     def sale_stats(self, seller_id: int, date_from: datetime, date_to: datetime, all_pos: bool = True) -> dict:
         """{'count': int, 'saleAmount': float} for one seller over a period.
