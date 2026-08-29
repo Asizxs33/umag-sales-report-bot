@@ -46,3 +46,9 @@ ALERT_NOTIFY_USER_IDS = [
 # впечатление "ночью отчёт не пришёл", хотя он ещё не должен был прийти).
 SUMMARY_HOUR = int(os.environ.get("SUMMARY_HOUR", str(SYNC_HOUR)))
 SUMMARY_MINUTE = int(os.environ.get("SUMMARY_MINUTE", str(min(59, SYNC_MINUTE + 15))))
+
+# Секрет для ручного запуска синхронизации по HTTP (кнопка «Синхронизировать»
+# на дашборде, POST /sync с заголовком X-Sync-Secret) -- если не задан,
+# эндпоинт отключён (всегда отвечает 503), чтобы никто посторонний не мог
+# дёргать синхронизацию без секрета.
+SYNC_API_SECRET = os.environ.get("SYNC_API_SECRET", "")

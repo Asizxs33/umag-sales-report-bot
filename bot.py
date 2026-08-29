@@ -30,6 +30,7 @@ from config import (
     DASHBOARD_DATABASE_URL,
     SUMMARY_HOUR,
     SUMMARY_MINUTE,
+    SYNC_API_SECRET,
     SYNC_HOUR,
     SYNC_MINUTE,
     SYNC_NOTIFY_USER_IDS,
@@ -317,10 +318,36 @@ async def error_handler(event: ErrorEvent):
     return True
 
 
+async def _http_sync(request: web.Request) -> web.Response:
+    """POST /sync — ручной запуск синхронизации по HTTP (кнопка
+    «Синхронизировать» на дашборде), альтернатива команде /sync в
+    Telegram. Требует заголовок X-Sync-Secret, совпадающий с
+    SYNC_API_SECRET; без настроенного секрета эндпоинт всегда 503."""
+    if not SYNC_API_SECRET:
+        return web.json_response({"error": "sync endpoint not configured"}, status=503)
+    if request.headers.get("X-Sync-Secret") != SYNC_API_SECRET:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    if not DASHBOARD_DATABASE_URL:
+        return web.json_response({"error": "DASHBOARD_DATABASE_URL not set"}, status=503)
+    try:
+        summary = await _run_sync(datetime.now().date())
+    except Exception as e:
+        log.exception("HTTP-triggered sync failed")
+        return web.json_response({"error": str(e)}, status=500)
+    text = "🔄 Синхронизация запущена вручную с дашборда\n" + _format_sync_summary(summary)
+    for user_id in SYNC_NOTIFY_USER_IDS:
+        try:
+            await bot.send_message(user_id, text)
+        except Exception:
+            log.exception("Failed to notify user %s about manual HTTP sync", user_id)
+    return web.json_response(summary)
+
+
 async def _run_health_server():
     port = int(os.environ.get("PORT", 8080))
     app = web.Application()
     app.router.add_get("/", lambda _req: web.Response(text="ok"))
+    app.router.add_post("/sync", _http_sync)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
