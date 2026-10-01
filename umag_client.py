@@ -219,6 +219,56 @@ class UmagClient:
         """
         return self._list_sales(date_from, date_to, seller_id=seller_id, all_pos=all_pos)
 
+    def debts_by_seller(self, date_from: datetime, date_to: datetime) -> dict[int, float]:
+        """{customFieldItemId: outstanding debt amount} for the WHOLE store
+        over a period -- joins the same `debts` ({saleId, amount}) array
+        used by store_total_sales() with `saleCustomFields` (saleId ->
+        "Продавцы" customFieldItemId), both returned by the same
+        /opr/sale/list-without-products endpoint, to attribute each
+        unpaid sale to the seller tagged on it.
+
+        Debt on sales with no seller tag (e.g. an "Online"/aggregate
+        channel) is simply omitted here -- callers wanting that remainder
+        should subtract sum(this dict.values()) from the store-wide
+        debtAmount (store_total_sales) for the same period.
+
+        No posId filter (matches store_total_sales(all_pos=True)) so the
+        per-seller total is comparable to the store-wide debt figure
+        already synced into store_daily_revenue.debtAmount.
+        """
+        seller_field_id = self._find_seller_field_id()
+        page_size = 500
+        first = 0
+        seen_sales = 0
+        debts: dict[int, float] = {}
+        sale_seller: dict[int, int] = {}
+        while True:
+            params: dict[str, Any] = {
+                "first": first,
+                "pageSize": page_size,
+                "fromTime": int(date_from.timestamp() * 1000),
+                "toTime": int(date_to.timestamp() * 1000),
+                "storeId": self.store_id,
+            }
+            data = self._get("/opr/sale/list-without-products", params=params)
+            page_sales = data.get("sales", [])
+            seen_sales += len(page_sales)
+            for scf in data.get("saleCustomFields", []):
+                if scf.get("customFieldId") == seller_field_id:
+                    sale_seller[scf["saleId"]] = scf["customFieldItemId"]
+            for d in data.get("debts", []):
+                debts[d["saleId"]] = d["amount"]
+            if seen_sales >= data.get("count", 0) or not page_sales:
+                break
+            first += page_size
+
+        by_seller: dict[int, float] = {}
+        for sale_id, amount in debts.items():
+            seller_id = sale_seller.get(sale_id)
+            if seller_id is not None:
+                by_seller[seller_id] = by_seller.get(seller_id, 0.0) + amount
+        return by_seller
+
     def store_total_sales(self, date_from: datetime, date_to: datetime, all_pos: bool = True) -> dict:
         """{'count': int, 'saleAmount': float} for the WHOLE store over a
         period -- no seller filter, so this includes sales not tagged to

@@ -81,6 +81,11 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
         stores_needed = sorted({emp["store"] for emp in employees})
         for store_name in stores_needed:
             umag.select_store(store_name)
+            store_department = STORE_TOTAL_SETTINGS_COLUMN.get(store_name, (None, None, None))[2]
+            # {customFieldItemId: долг} за report_date -- считается один раз на
+            # магазин (не на сотрудника), чтобы не дублировать постраничный
+            # обход /opr/sale/list-without-products на каждого продавца.
+            seller_debts = umag.debts_by_seller(date_from, date_to) if store_department else {}
 
             for emp in employees:
                 if emp["store"] != store_name:
@@ -115,6 +120,25 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
                     stats["count"],
                 )
                 synced.append(emp["name"])
+
+                # Доля этого сотрудника в общем долге точки за report_date
+                # (см. StoreDailyRevenue.debtAmount ниже) -- 0 пишется явно,
+                # чтобы погашенный долг обнулялся при повторном прогоне, а не
+                # оставался висеть со вчерашним значением.
+                if store_department:
+                    await conn.execute(
+                        """
+                        INSERT INTO employee_daily_debt (id, employee_id, department, date, amount, updated_at)
+                        VALUES ($1, $2, $3, $4, $5, now())
+                        ON CONFLICT (employee_id, date)
+                        DO UPDATE SET amount = EXCLUDED.amount, department = EXCLUDED.department, updated_at = now()
+                        """,
+                        str(uuid.uuid4()),
+                        emp["id"],
+                        store_department,
+                        report_date.isoformat(),
+                        int(seller_debts.get(seller["id"], 0)),
+                    )
 
             store_total_entry = STORE_TOTAL_SETTINGS_COLUMN.get(store_name)
             if store_total_entry:
