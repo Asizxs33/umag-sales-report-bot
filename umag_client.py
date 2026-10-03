@@ -269,6 +269,60 @@ class UmagClient:
                 by_seller[seller_id] = by_seller.get(seller_id, 0.0) + amount
         return by_seller
 
+    def period_breakdown(self, date_from: datetime, date_to: datetime) -> dict:
+        """Одним проходом по /opr/sale/list-without-products (все кассы, без
+        фильтра по продавцу): итог по точке целиком (как store_total_sales:
+        amount включает неоплаченные, debt -- их сумма) и личные продажи по
+        каждому продавцу (как sale_stats: БЕЗ неоплаченных продаж).
+
+        {'amount', 'debt', 'by_seller': {customFieldItemId: {'count', 'amount'}}}
+        Для исторической загрузки (backfill_history.py): вместо отдельного
+        запроса на каждого продавца -- один на день.
+        """
+        seller_field_id = self._find_seller_field_id()
+        page_size = 500
+        first = 0
+        all_sales: list[dict] = []
+        debts: dict[int, float] = {}
+        sale_seller: dict[int, int] = {}
+        while True:
+            data = self._get(
+                "/opr/sale/list-without-products",
+                params={
+                    "first": first,
+                    "pageSize": page_size,
+                    "fromTime": int(date_from.timestamp() * 1000),
+                    "toTime": int(date_to.timestamp() * 1000),
+                    "storeId": self.store_id,
+                },
+            )
+            page_sales = data.get("sales", [])
+            all_sales.extend(page_sales)
+            for scf in data.get("saleCustomFields", []):
+                if scf.get("customFieldId") == seller_field_id:
+                    sale_seller[scf["saleId"]] = scf["customFieldItemId"]
+            for d in data.get("debts", []):
+                debts[d["saleId"]] = d["amount"]
+            if len(all_sales) >= data.get("count", 0) or not page_sales:
+                break
+            first += page_size
+
+        by_seller: dict[int, dict] = {}
+        for s in all_sales:
+            if s["id"] in debts:
+                continue
+            seller_id = sale_seller.get(s["id"])
+            if seller_id is None:
+                continue
+            entry = by_seller.setdefault(seller_id, {"count": 0, "amount": 0.0})
+            entry["count"] += 1
+            entry["amount"] += s["amount"]
+        return {
+            "amount": sum(s["amount"] for s in all_sales),
+            "debt": sum(debts.values()),
+            "by_seller": by_seller,
+        }
+
     def store_total_sales(self, date_from: datetime, date_to: datetime, all_pos: bool = True) -> dict:
         """{'count': int, 'saleAmount': float} for the WHOLE store over a
         period -- no seller filter, so this includes sales not tagged to
