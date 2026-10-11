@@ -18,6 +18,7 @@ from config import DASHBOARD_DATABASE_URL
 DEPARTMENT_TO_STORE = {
     "Iposuda": "Iposuda",
     "Колл-центр": "Iposuda",
+    "Оптовый": "Iposuda",
     "Ikids": "Kids",
 }
 

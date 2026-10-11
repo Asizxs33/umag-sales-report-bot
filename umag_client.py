@@ -200,7 +200,10 @@ class UmagClient:
         sales = [s for s in all_sales if s["id"] not in unpaid_ids] if exclude_unpaid else all_sales
         return {"count": len(sales), "saleAmount": sum(s["amount"] for s in sales), "debtAmount": debt_amount}
 
-    def sale_stats(self, seller_id: int, date_from: datetime, date_to: datetime, all_pos: bool = True) -> dict:
+    def sale_stats(
+        self, seller_id: int, date_from: datetime, date_to: datetime,
+        all_pos: bool = True, *, exclude_unpaid: bool = False,
+    ) -> dict:
         """{'count': int, 'saleAmount': float} for one seller over a period.
 
         all_pos=True (default): no posId filter -- counts sales across
@@ -212,12 +215,13 @@ class UmagClient:
           _find_manual_pos_id) -- matches exactly what the "Продажи"
           (накладные) list shows, i.e. manual invoices only.
 
-        Either way, excludes any sale that currently has an outstanding
-        balance ("Осталось" > 0 / shown red) -- `list-without-products`
-        returns a `debts` array of {saleId, amount} for exactly those
-        sales, which `list-all`'s aggregate stats don't expose per-sale.
+        Includes unpaid and partially paid invoices at their FULL sale
+        amount, and counts each as a served customer, just like paid sales.
+        Debt is reported separately in debtAmount; it must not be added to
+        saleAmount again. Paying an invoice does not create another sale.
+        Set exclude_unpaid=True only for an explicitly paid-only report.
         """
-        return self._list_sales(date_from, date_to, seller_id=seller_id, all_pos=all_pos)
+        return self._list_sales(date_from, date_to, seller_id=seller_id, all_pos=all_pos, exclude_unpaid=exclude_unpaid)
 
     def debts_by_seller(self, date_from: datetime, date_to: datetime) -> dict[int, float]:
         """{customFieldItemId: outstanding debt amount} for the WHOLE store
@@ -273,7 +277,8 @@ class UmagClient:
         """Одним проходом по /opr/sale/list-without-products (все кассы, без
         фильтра по продавцу): итог по точке целиком (как store_total_sales:
         amount включает неоплаченные, debt -- их сумма) и личные продажи по
-        каждому продавцу (как sale_stats: БЕЗ неоплаченных продаж).
+        каждому продавцу (как sale_stats: включая долговые накладные
+        целиком, независимо от суммы оставшегося долга).
 
         {'amount', 'debt', 'by_seller': {customFieldItemId: {'count', 'amount'}}}
         Для исторической загрузки (backfill_history.py): вместо отдельного
@@ -309,8 +314,6 @@ class UmagClient:
 
         by_seller: dict[int, dict] = {}
         for s in all_sales:
-            if s["id"] in debts:
-                continue
             seller_id = sale_seller.get(s["id"])
             if seller_id is None:
                 continue
@@ -329,10 +332,9 @@ class UmagClient:
         any specific "Продавцы" item (e.g. an "Online"/aggregate bucket) as
         well as every named seller's sales.
 
-        exclude_unpaid=False (unlike sale_stats): UMAG's own "Отчёт
+        exclude_unpaid=False (same as sale_stats): UMAG's own "Отчёт
         прибыль/убытки" "Выручка" figure counts every sale regardless of
         outstanding balance -- confirmed live 2026-08-16 (Iposuda, matched
-        to within 0.3%). sale_stats() intentionally keeps excluding unpaid
-        sales for personal seller KPI tracking; this is a different,
-        accounting-style total, so it does not."""
+        to within 0.3%). The store total can exceed the sum of tracked
+        sellers because it also includes sales without a seller tag."""
         return self._list_sales(date_from, date_to, seller_id=None, all_pos=all_pos, exclude_unpaid=False)

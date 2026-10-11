@@ -11,6 +11,7 @@ store_daily_revenue (выручка и долг точки целиком) и lo
 Использование:
     DASHBOARD_DATABASE_URL=... python -u backfill_history.py 2025-01-01 2025-12-31
 Безопасно перезапускать: записи за те же дни обновляются.
+Личные продажи включают полную сумму долговых накладных, как sync_day.
 """
 
 from __future__ import annotations
@@ -108,9 +109,9 @@ async def main():
                     )
 
                 for seller_id, employee_id in seller_to_employee[store].items():
-                    stats = result["by_seller"].get(seller_id)
-                    if not stats:
-                        continue
+                    # Записываем и нулевой результат: после исправлений в
+                    # UMAG повторный прогон не должен оставлять старый факт.
+                    stats = result["by_seller"].get(seller_id, {"count": 0, "amount": 0})
                     await conn.execute(
                         """
                         INSERT INTO log_entries

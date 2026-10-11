@@ -6,6 +6,10 @@ asyncpg -- без HTTP, дашборду не обязательно быть п
 (employee_id, date, source, type) -- повторный прогон за тот же день
 обновляет существующую запись, а не плодит дубликаты.
 
+Долговые и частично оплаченные накладные входят в sales_amount полной
+суммой и в customers_served наравне с оплаченными. Остаток долга хранится
+отдельно в employee_daily_debt и к продажам повторно не прибавляется.
+
 Список сотрудников читается напрямую из таблицы employees БД дашборда
 (активные, active=true) -- добавление/редактирование сотрудника на
 странице «Сотрудники» дашборда сразу подхватывается следующим прогоном
@@ -96,7 +100,10 @@ async def sync_day(umag: UmagClient, report_date: date) -> dict:
                     not_in_umag.append(emp["name"])
                     continue
 
-                stats = umag.sale_stats(seller["id"], date_from, date_to, all_pos=True)
+                stats = umag.sale_stats(
+                    seller["id"], date_from, date_to,
+                    all_pos=True, exclude_unpaid=False,
+                )
 
                 # Postgres-миграция Prisma по умолчанию создаёт нативный enum-тип
                 # "LogType" -- отсюда явный каст. Если после первого прогона
