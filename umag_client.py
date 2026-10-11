@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import difflib
+import math
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -19,6 +21,16 @@ CLIENT_VER = "angular_cabinet_20.0.10"
 API_VER = "1.4"
 
 SELLER_FIELD_NAME = "Продавцы"
+
+# Продавцы, чьи долги в отчёте сворачиваются в одну строку («Сардор К: сумма»)
+# вместо списка контрагентов. Тот же список, что AGGREGATED_DEBT_SELLERS в
+# сайте кассового отчёта (iposuda-cash-report/src/lib/stores.ts).
+AGGREGATED_DEBT_SELLERS = [(("камилов", "сардор"), "Сардор К")]
+
+
+def round_half_up(x: float) -> int:
+    """Как Math.round в JS (218528.5 -> 218529), а не банковское округление."""
+    return int(math.floor(x + 0.5))
 
 
 class UmagError(RuntimeError):
@@ -33,7 +45,8 @@ class UmagClient:
         self.store_id: int | None = None
         self._seller_field_id: int | None = None
         self._manual_pos_id: int | None = None
-        self._http = httpx.Client(base_url=BASE_URL, timeout=20.0)
+        self._http = httpx.Client(base_url=BASE_URL, timeout=40.0)
+        self._sellers_cache: dict[int, tuple[float, list[dict]]] = {}
 
     # ---------------------------------------------------------------- auth
     def login(self) -> None:
@@ -97,8 +110,12 @@ class UmagClient:
 
     def list_sellers(self) -> list[dict]:
         """[{id, name, deleted}] -- the "Продавцы" dropdown options."""
+        cached = self._sellers_cache.get(self.store_id)
+        if cached and time.time() - cached[0] < 600:
+            return cached[1]
         field_id = self._find_seller_field_id()
         data = self._get(f"/org/custom-field/get/{field_id}", params={"storeId": self.store_id})
+        self._sellers_cache[self.store_id] = (time.time(), data["customFieldItems"])
         return data["customFieldItems"]
 
     @staticmethod
@@ -325,6 +342,146 @@ class UmagClient:
             "debt": sum(debts.values()),
             "by_seller": by_seller,
         }
+
+    def day_full(self, date_from: datetime, date_to: datetime) -> dict:
+        """Всё про один день выбранной точки за один проход (все кассы).
+
+        snapshot -- итоги в том же виде, что снимок кассового отчёта:
+          выручка как в UMAG «Прибыль/убытки» (продажи минус возвраты),
+          долги, накладные оплачено/нет, строки долгов (у продавцов из
+          AGGREGATED_DEBT_SELLERS одной суммой, остальные по контрагентам).
+        by_seller -- личные продажи по продавцам, включая долговые накладные
+          полной суммой (как sale_stats по умолчанию).
+        """
+        seller_field_id = self._find_seller_field_id()
+        seller_names = {s["id"]: s["name"] for s in self.list_sellers()}
+        page_size = 500
+        first = 0
+        sales: list[dict] = []
+        debts: dict[int, float] = {}
+        sale_seller: dict[int, int] = {}
+        customers: dict[int, str] = {}
+        virtual_pos: set[int] = set()
+        while True:
+            data = self._get(
+                "/opr/sale/list-without-products",
+                params={
+                    "first": first,
+                    "pageSize": page_size,
+                    "fromTime": int(date_from.timestamp() * 1000),
+                    "toTime": int(date_to.timestamp() * 1000),
+                    "storeId": self.store_id,
+                },
+            )
+            page = data.get("sales", [])
+            sales.extend(page)
+            for d in data.get("debts", []):
+                debts[d["saleId"]] = d["amount"]
+            for f in data.get("saleCustomFields", []):
+                if f.get("customFieldId") == seller_field_id:
+                    sale_seller[f["saleId"]] = f["customFieldItemId"]
+            for c in data.get("customers", []):
+                customers[c["id"]] = str(c.get("name") or "").strip()
+            for pos in data.get("poses", []):
+                if pos.get("virtual"):
+                    virtual_pos.add(pos["id"])
+            if len(sales) >= data.get("count", 0) or not page:
+                break
+            first += page_size
+
+        pnl = self._get(
+            "/report/profit-and-loss",
+            params={
+                "fromTime": int(date_from.timestamp() * 1000),
+                "toTime": int(date_to.timestamp() * 1000),
+                "storeId": self.store_id,
+            },
+        ).get("profitReport", {})
+        gross = float(pnl.get("saleAmount", sum(s["amount"] for s in sales)))
+        refunds = float(pnl.get("refundAmount", 0))
+        revenue = float(pnl.get("revenueAmount", gross - refunds))
+
+        by_seller: dict[int, dict] = {}
+        debt_lines: dict[str, float] = {}
+        for s in sales:
+            # Личные продажи: долговые и частично оплаченные накладные входят
+            # полной суммой, как в sale_stats(exclude_unpaid=False); долг
+            # считается отдельно и к продажам повторно не прибавляется.
+            seller_id = sale_seller.get(s["id"])
+            if seller_id is not None:
+                entry = by_seller.setdefault(seller_id, {"count": 0, "amount": 0.0})
+                entry["count"] += 1
+                entry["amount"] += s["amount"]
+            owed = debts.get(s["id"])
+            if owed is None:
+                continue
+            seller =seller_names.get(sale_seller.get(s["id"], -1), "").lower()
+            aggregated = next((label for words, label in AGGREGATED_DEBT_SELLERS if all(w in seller for w in words)), None)
+            name = aggregated or customers.get(s.get("customerId") or -1) or "Без контрагента"
+            debt_lines[name] = debt_lines.get(name, 0.0) + owed
+
+        invoices = [s for s in sales if s["posId"] in virtual_pos]
+        snapshot = {
+            "sales": {
+                "salesCount": len(sales),
+                "revenue": round_half_up(revenue),
+                "grossSales": round_half_up(gross),
+                "refunds": round_half_up(refunds),
+                "debt": round_half_up(sum(debts.values())),
+                "unpaidCount": len(debts),
+                "invoices": {
+                    "count": len(invoices),
+                    "paidCount": sum(1 for s in invoices if s["id"] not in debts),
+                    "unpaidCount": sum(1 for s in invoices if s["id"] in debts),
+                    "amount": round_half_up(sum(s["amount"] for s in invoices)),
+                    "debt": round_half_up(sum(debts.get(s["id"], 0.0) for s in invoices)),
+                },
+            },
+            "debtors": sorted(
+                ({"name": n, "amount": round_half_up(a)} for n, a in debt_lines.items()),
+                key=lambda d: -d["amount"],
+            ),
+        }
+        return {"snapshot": snapshot, "by_seller": by_seller}
+
+    def payments(self, date_from: datetime, date_to: datetime) -> list[dict]:
+        """Платежи точки за период (раздел «Платежи» кабинета UMAG):
+        [{id, time_ms, type, amount, account, purpose, note, user}]."""
+        out: dict[int, dict] = {}
+        first = 0
+        while True:
+            data = self._get(
+                "/fin/payment/list-store-payments",
+                params={
+                    "first": first,
+                    "pageSize": 100,
+                    "fromTime": int(date_from.timestamp() * 1000),
+                    "toTime": int(date_to.timestamp() * 1000),
+                    "storeId": self.store_id,
+                },
+            )
+            item_name = {i["id"]: i["name"] for i in data.get("customFieldItems", [])}
+            purpose: dict[int, str] = {}
+            for f in data.get("paymentCustomFields", []):
+                if f["paymentId"] not in purpose and f["customFieldItemId"] in item_name:
+                    purpose[f["paymentId"]] = item_name[f["customFieldItemId"]]
+            account = {a["paymentId"]: a["accountName"] for a in data.get("accounts", [])}
+            user = {u["paymentId"]: u["firstName"] for u in data.get("users", [])}
+            for p in data.get("payments", []):
+                out[p["id"]] = {
+                    "id": p["id"],
+                    "time_ms": p["docTime"],
+                    "type": p["type"],
+                    "amount": round_half_up(p["amount"]),
+                    "account": account.get(p["id"]),
+                    "purpose": purpose.get(p["id"]),
+                    "note": p.get("note"),
+                    "user": user.get(p["id"]),
+                }
+            if len(out) >= data.get("count", 0) or not data.get("payments"):
+                break
+            first += 100
+        return list(out.values())
 
     def store_total_sales(self, date_from: datetime, date_to: datetime, all_pos: bool = True) -> dict:
         """{'count': int, 'saleAmount': float} for the WHOLE store over a

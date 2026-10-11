@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -329,11 +329,22 @@ async def _http_sync(request: web.Request) -> web.Response:
         return web.json_response({"error": "unauthorized"}, status=401)
     if not DASHBOARD_DATABASE_URL:
         return web.json_response({"error": "DASHBOARD_DATABASE_URL not set"}, status=503)
+    # ?date=YYYY-MM-DD -- синхронизировать конкретный день (кнопка «за период»
+    # на дашборде гоняет эндпоинт по дням); без даты -- сегодня по Алматы.
+    # Для явной даты уведомление в Telegram не шлётся, иначе период из 30
+    # дней дал бы 30 сообщений.
+    raw_date = request.query.get("date")
     try:
-        summary = await _run_sync(datetime.now().date())
+        report_date = datetime.fromisoformat(raw_date).date() if raw_date else datetime.now(timezone(timedelta(hours=5))).date()
+    except ValueError:
+        return web.json_response({"error": "date must be YYYY-MM-DD"}, status=400)
+    try:
+        summary = await _run_sync(report_date)
     except Exception as e:
         log.exception("HTTP-triggered sync failed")
         return web.json_response({"error": str(e)}, status=500)
+    if raw_date:
+        return web.json_response(summary)
     text = "🔄 Синхронизация запущена вручную с дашборда\n" + _format_sync_summary(summary)
     for user_id in SYNC_NOTIFY_USER_IDS:
         try:
